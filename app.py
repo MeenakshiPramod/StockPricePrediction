@@ -25,6 +25,26 @@ This dashboard allows you to predict stock prices using various deep learning mo
 Select a stock ticker, choose your preferred models, and adjust parameters to get started.
 """)
 
+# Confidence score calculation function
+def calculate_confidence_score(y_true, y_pred):
+    """
+    Calculate improved confidence score based on prediction intervals and residual analysis
+    Returns score between 0-100 where higher is better
+    """
+    residuals = y_true - y_pred
+    std_residuals = np.std(residuals)
+    mean_absolute_residual = np.mean(np.abs(residuals))
+    mean_true = np.mean(y_true)
+    
+    # Calculate coverage of 95% prediction interval
+    lower_bound = y_pred - 1.96*std_residuals
+    upper_bound = y_pred + 1.96*std_residuals
+    coverage = np.mean((y_true >= lower_bound) & (y_true <= upper_bound))
+    
+    # Combine metrics into confidence score (40% weight to accuracy, 60% to coverage)
+    confidence_score = 100 * (0.4*(1 - mean_absolute_residual/mean_true) + 0.6*coverage)
+    return np.clip(confidence_score, 0, 100)
+
 # Sidebar for user inputs
 st.sidebar.header("Model Configuration")
 
@@ -174,7 +194,7 @@ def build_cnn_bilstm_model(input_shape):
     return model
 
 def evaluate_model(model, X_test, y_test, scaler, df):
-    """Evaluate model performance"""
+    """Evaluate model performance with improved confidence scoring"""
     y_pred_scaled = model.predict(X_test).flatten()
 
     dummy_array = np.zeros((len(y_pred_scaled), X_test.shape[2]))
@@ -188,8 +208,11 @@ def evaluate_model(model, X_test, y_test, scaler, df):
     rmse = np.sqrt(mean_squared_error(y_test_actual, y_pred_actual))
     r2 = r2_score(y_test_actual, y_pred_actual)
     mape = np.mean(np.abs((y_test_actual - y_pred_actual) / y_test_actual)) * 100
+    
+    # Calculate improved confidence score
+    confidence_score = calculate_confidence_score(y_test_actual, y_pred_actual)
 
-    return mae, rmse, r2, mape, y_test_actual, y_pred_actual
+    return mae, rmse, r2, mape, confidence_score, y_test_actual, y_pred_actual
 
 def predict_future(model, last_sequence, scaler, df, days=5):
     """Predict future stock prices"""
@@ -220,8 +243,34 @@ def predict_future(model, last_sequence, scaler, df, days=5):
     return future_predictions
 
 def plot_results(df, y_test_actual, y_pred_actual, future_dates, future_predictions, model_name):
-    """Plot actual vs predicted values with future predictions"""
+    """Plot actual vs predicted values with prediction intervals"""
+    # Calculate prediction intervals
+    residuals = y_test_actual - y_pred_actual
+    std_residuals = np.std(residuals)
+    upper_bound = y_pred_actual + 1.96*std_residuals
+    lower_bound = y_pred_actual - 1.96*std_residuals
+    
     fig = go.Figure()
+    
+    # Add prediction interval
+    fig.add_trace(go.Scatter(
+        x=df.index[-len(y_pred_actual):],
+        y=upper_bound,
+        fill=None,
+        mode='lines',
+        line_color='rgba(255,165,0,0.3)',
+        name='Upper Bound',
+        showlegend=False
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=df.index[-len(y_pred_actual):],
+        y=lower_bound,
+        fill='tonexty',
+        mode='lines',
+        line_color='rgba(255,165,0,0.3)',
+        name='95% Prediction Interval'
+    ))
     
     # Add actual values
     fig.add_trace(go.Scatter(
@@ -239,7 +288,7 @@ def plot_results(df, y_test_actual, y_pred_actual, future_dates, future_predicti
         line=dict(color='red')
     ))
     
-    # Add future predictions
+    # Add future predictions if available
     if len(future_predictions) > 0:
         fig.add_trace(go.Scatter(
             x=future_dates,
@@ -249,14 +298,12 @@ def plot_results(df, y_test_actual, y_pred_actual, future_dates, future_predicti
         ))
     
     fig.update_layout(
-        title=f'{model_name} Predictions vs Actual Values',
+        title=f'{model_name} Predictions with Confidence Intervals',
         xaxis_title='Date',
         yaxis_title='Price',
         template='plotly_dark',
-        # Zoom in on the most recent data and predictions
-        xaxis=dict(
-            range=[df.index[-30], future_dates[-1]]
-        )
+        xaxis=dict(range=[df.index[-30], future_dates[-1]] if len(future_predictions) > 0 
+                  else [df.index[-30], df.index[-1]])
     )
     
     return fig
@@ -288,6 +335,7 @@ if st.sidebar.button("Start Analysis"):
         - **RMSE (Root Mean Square Error)**: Square root of the average of squared differences between predicted and actual values. More sensitive to outliers, lower is better.
         - **R² (R-squared)**: Proportion of variance in the dependent variable that is predictable from the independent variables. Closer to 1 is better.
         - **MAPE (Mean Absolute Percentage Error)**: Average of percentage differences between predicted and actual values. Lower is better.
+        - **Confidence Score**: Combines prediction accuracy (40%) and interval reliability (60%). Scores near 100 indicate both accurate predictions and correct prediction ranges.
         """
         st.markdown(metrics_explanation)
         
@@ -317,16 +365,13 @@ if st.sidebar.button("Start Analysis"):
                 )
                 
                 # Evaluate model
-                mae, rmse, r2, mape, y_test_actual, y_pred_actual = evaluate_model(
+                mae, rmse, r2, mape, confidence_score, y_test_actual, y_pred_actual = evaluate_model(
                     model, X_test, y_test, scaler, df
                 )
                 
                 # Predict future values (5 days)
                 last_sequence = X_test[-1]
                 future_predictions = predict_future(model, last_sequence, scaler, df, future_days)
-
-                mean_actual_value = np.mean(y_test_actual)
-                confidence_score = 100 * (1 - (rmse / mean_actual_value))
                 
                 # Store results
                 results[model_name] = {
@@ -334,7 +379,6 @@ if st.sidebar.button("Start Analysis"):
                     'rmse': rmse,
                     'r2': r2,
                     'mape': mape,
-                    'mean_actual': mean_actual_value,
                     'confidence_score': confidence_score,
                     'y_test_actual': y_test_actual,
                     'y_pred_actual': y_pred_actual,
@@ -354,7 +398,6 @@ if st.sidebar.button("Start Analysis"):
                 with col5:
                     st.metric("Confidence", f"{confidence_score:.2f}%")
 
-                
                 # Plot results
                 fig = plot_results(df, y_test_actual, y_pred_actual, future_dates, future_predictions, model_name)
                 st.plotly_chart(fig, use_container_width=True)
@@ -379,7 +422,6 @@ if st.sidebar.button("Start Analysis"):
                 'RMSE': [results[model]['rmse'] for model in results],
                 'R²': [results[model]['r2'] for model in results],
                 'MAPE': [results[model]['mape'] for model in results],
-                'Mean Actual': [results[model]['mean_actual'] for model in results],
                 'Confidence Score': [f"{results[model]['confidence_score']:.2f}%" for model in results]
             })
             st.dataframe(comparison_df)
