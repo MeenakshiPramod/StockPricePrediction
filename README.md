@@ -25,7 +25,7 @@ A Streamlit-based web application for predicting stock prices using various deep
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/Abyssalwolf/StockPricePrediction.git
+git clone https://github.com/MeenakshiPramod/StockPricePrediction.git
 cd StockPricePrediction
 ```
 
